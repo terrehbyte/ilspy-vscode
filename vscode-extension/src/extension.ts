@@ -13,6 +13,12 @@ import { MsilDecompilerServer } from './msildecompiler/server';
 import { DecompiledTreeProvider, MemberNode, LangaugeNames } from './msildecompiler/decompiledTreeProvider';
 import { DecompiledCode } from './msildecompiler/protocol';
 
+let decomCache: DecompiledCode;
+let csDocument: vscode.TextDocument;
+let ilDocument: vscode.TextDocument;
+
+let globalProvider: vscode.TextDocumentContentProvider;
+
 export function activate(context: vscode.ExtensionContext) {
 
     const extensionId = 'icsharpcode.ilspy-vscode';
@@ -25,6 +31,21 @@ export function activate(context: vscode.ExtensionContext) {
     const disposables: vscode.Disposable[] = [];
 
     console.log('Congratulations, your extension "ilspy-vscode" is now active!');
+
+    const ilScheme = 'ilspy';
+    const ilProvider = new class implements vscode.TextDocumentContentProvider {
+
+        onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri>();
+        onDidChange = this.onDidChangeEmitter.event;
+
+        provideTextDocumentContent(uri: vscode.Uri): string {
+            console.log("[Info] Updating ILSpy view...");
+            const isCsFile = uri.path.endsWith('.cs');
+            return isCsFile ? decomCache[LangaugeNames.CSharp] : decomCache[LangaugeNames.IL];
+        }
+    }
+    globalProvider = ilProvider;
+    disposables.push(vscode.workspace.registerTextDocumentContentProvider(ilScheme, ilProvider));
 
     decompileTreeProvider = new DecompiledTreeProvider(server);
     disposables.push(vscode.window.registerTreeDataProvider("ilspyDecompiledMembers", decompileTreeProvider));
@@ -51,13 +72,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         lastSelectedNode = node;
+        let name = true ? node.name : 'ilspy';
         if (node.decompiled) {
-            showCode(node.decompiled);
+            showCode(name, node.decompiled);
         }
         else {
             decompileTreeProvider.getCode(node).then(code => {
                 node.decompiled = code;
-                showCode(node.decompiled);
+                showCode(name, node.decompiled);
             });
         }
     }));
@@ -118,21 +140,46 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
 }
 
-function showCode(code: DecompiledCode) {
-    showCodeInEditor(code[LangaugeNames.CSharp], "csharp", vscode.ViewColumn.One);
-    showCodeInEditor(code[LangaugeNames.IL], "text", vscode.ViewColumn.Two);
+function showCode(name: string, code: DecompiledCode) {
+    decomCache = code;
+    showCodeInEditor(name, code[LangaugeNames.CSharp], "csharp", vscode.ViewColumn.One);
+    showCodeInEditor(name, code[LangaugeNames.IL], "text", vscode.ViewColumn.Two);
 }
 
-function showCodeInEditor(code: string, language: string, viewColumn: vscode.ViewColumn) {
-    const untitledFileName = language === "csharp" ? "untitled:ilspy-decompilation.cs" : "untitled:ilspy-decompilation.il";
+function showCodeInEditor(name: string, code: string, language: string, viewColumn: vscode.ViewColumn) {
+    const untitledFileName = language === "csharp" ? `ilspy:${name}.cs` : `ilspy:${name}.il`;
     const uri = vscode.Uri.parse(untitledFileName);
-    vscode.workspace.openTextDocument(uri).then(document => {
-        vscode.window.showTextDocument(document, viewColumn, true).then(e => {
-            replaceCode(e, code);
-        });
-    }, errorReason => {
-        console.log("[Error] ilspy-vscode encountered an error while trying to show code: " + errorReason);
-    });
+    const isCsFile = uri.path.endsWith('.cs');
+    let targetDocument = isCsFile ? csDocument : ilDocument;
+
+    if (!targetDocument) {
+        if (isCsFile) {
+            vscode.workspace.openTextDocument(uri).then(document => {
+                csDocument = document;
+                vscode.window.showTextDocument(document, viewColumn, true);
+
+            });
+        }
+        else {
+            vscode.workspace.openTextDocument(uri).then(document => {
+                ilDocument = document;
+                vscode.window.showTextDocument(document, viewColumn, true);
+            });
+        }
+
+        return;
+    }
+
+    let updatedDocument = targetDocument.uri.with({ path: `${name}.${isCsFile ? '.cs' : '.il'}` });
+    vscode.window.showTextDocument(updatedDocument, { viewColumn: viewColumn, preview: false });
+
+    // vscode.workspace.openTextDocument(uri).then(document => {
+    //     vscode.window.showTextDocument(document, viewColumn, true).then(e => {
+    //         replaceCode(e, code);
+    //     });
+    // }, errorReason => {
+    //     console.log("[Error] ilspy-vscode encountered an error while trying to show code: " + errorReason);
+    // });
 }
 
 function replaceCode(editor: vscode.TextEditor, code: string) {
